@@ -7,3 +7,10 @@
 
 # Local History for Visual Studio Code
 .history/
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+.env*
+!.env.example
