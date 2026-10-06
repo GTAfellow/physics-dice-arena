@@ -1,6 +1,6 @@
 export const COUNT_MIN = 1;
 export const COUNT_MAX = 15;
-export const DICE_OPTIONS = ["d4", "d6", "d8", "d10", "d12", "d20", "d012", "d100"];
+export const DICE_OPTIONS = ["d4", "d6", "d8", "d10", "d12", "d20", "d100", "d100-tens", "d2", "d3", "df", "d012"];
 export const ARENA_OPTIONS = ["dish", "tower"];
 
 export const I18N = {
@@ -15,8 +15,13 @@ export const I18N = {
 		langSwitch: "中文",
 		ready: "Ready. Select type and count, then click Roll.",
 		rolling: "Rolling...",
+		cocked: "Cocked dice: {indices}. Roll again.",
 		cleared: "Arena cleared.",
-		hint: "The value of a d100 die is determined by two d10 dice.",
+		hintMouse: "Left drag: orbit. Wheel: zoom. Right drag: pan.",
+		hintTouch: "One finger: orbit. Pinch: zoom. Two fingers: pan.",
+		collapseControls: "Collapse controls",
+		expandControls: "Expand controls",
+		resetView: "Reset camera",
 		results: "Results",
 		sum: "Sum",
 		total: "Total",
@@ -29,6 +34,8 @@ export const I18N = {
 			tower: "Dice Tower",
 		},
 		options: {
+			d2: "D2 (D6-based)",
+			d3: "D3 (D6-based)",
 			d4: "D4",
 			d6: "D6",
 			d8: "D8",
@@ -37,6 +44,8 @@ export const I18N = {
 			d20: "D20",
 			d012: "D012 (0,1,2 repeated)",
 			d100: "D100",
+			"d100-tens": "D% (00-90)",
+			df: "DF (Fate)",
 		},
 	},
 	zh: {
@@ -50,8 +59,13 @@ export const I18N = {
 		langSwitch: "EN",
 		ready: "准备好了。选择骰子类型和数量，然后点击投掷。",
 		rolling: "投掷中...",
+		cocked: "第 {indices} 颗为歪骰，请重新投掷。",
 		cleared: "场地已清空。",
-		hint: "D100骰子的数值由两颗D10骰子组成",
+		hintMouse: "左键拖动旋转 · 滚轮缩放 · 右键拖动平移",
+		hintTouch: "单指拖动旋转 · 双指捏合缩放 · 双指拖动平移",
+		collapseControls: "收起菜单",
+		expandControls: "展开菜单",
+		resetView: "重置镜头",
 		results: "结果",
 		sum: "总和",
 		total: "合计",
@@ -64,6 +78,8 @@ export const I18N = {
 			tower: "骰子塔",
 		},
 		options: {
+			d2: "D2 (D6折算)",
+			d3: "D3 (D6折算)",
 			d4: "D4 (四面骰)",
 			d6: "D6 (六面骰)",
 			d8: "D8 (八面骰)",
@@ -72,6 +88,8 @@ export const I18N = {
 			d20: "D20 (二十面骰)",
 			d012: "D012 (0,1,2 重复)",
 			d100: "D100 (百分骰)",
+			"d100-tens": "D% (00-90十位骰)",
+			df: "DF (Fate骰)",
 		},
 	},
 };

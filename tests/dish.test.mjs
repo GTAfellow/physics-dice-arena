@@ -65,7 +65,7 @@ function simulate(types, seed) {
 }
 
 test("black-bottom wooden bowl contains and settles all dice types, including 15 dice", () => {
-	for (const type of ["d4", "d6", "d8", "d10", "d12", "d20", "d012", "d100-ones", "d100-tens"]) {
+	for (const type of ["d2", "d3", "df", "d4", "d6", "d8", "d10", "d12", "d20", "d012", "d100-ones", "d100-tens"]) {
 		for (let seed = 1; seed <= 3; seed++) {
 			simulate([type], seed);
 			simulate(Array(15).fill(type), seed);

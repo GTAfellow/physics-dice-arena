@@ -20,6 +20,9 @@ const copy = computed(() => I18N[currentLang.value]);
 const isD100 = computed(() => diceType.value === "d100");
 
 const result = computed(() => {
+	if (resultPayload.value?.kind === "cocked") {
+		return copy.value.cocked.replace("{indices}", resultPayload.value.indices.join(", "));
+	}
 	if (resultPayload.value?.kind === "percentile") {
 		const { ones, tens, total } = resultPayload.value;
 		return `${copy.value.percentile}: ${copy.value.tens}=${String(tens).padStart(2, "0")}, ${copy.value.ones}=${ones} | ${copy.value.total}: ${total}`;
@@ -39,8 +42,8 @@ function validateCount() {
 		return { valid: true, count: 2 };
 	}
 
-	const parsed = Number.parseInt(diceCount.value, 10);
-	const valid = Number.isFinite(parsed) && parsed >= COUNT_MIN && parsed <= COUNT_MAX;
+	const parsed = Number(diceCount.value);
+	const valid = Number.isInteger(parsed) && parsed >= COUNT_MIN && parsed <= COUNT_MAX;
 	countInvalid.value = !valid;
 
 	if (valid) {
@@ -84,6 +87,10 @@ function clearArena() {
 	arena.value?.clear();
 	resultPayload.value = null;
 	resultMode.value = "cleared";
+}
+
+function resetCamera() {
+	arena.value?.resetView();
 }
 
 function toggleLang() {
@@ -135,9 +142,11 @@ onUnmounted(() => {
 			:count-invalid="countInvalid"
 			:is-d100="isD100"
 			:result="result"
+			:result-invalid="resultPayload?.kind === 'cocked'"
 			@roll="rollDice"
 			@clear="clearArena"
 			@toggle-lang="toggleLang"
+			@reset-view="resetCamera"
 		/>
 	</div>
 </template>

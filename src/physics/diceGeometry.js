@@ -5,6 +5,69 @@ function v3(x, y, z) {
 	return new CANNON.Vec3(x, y, z);
 }
 
+export function computeFaceNormals(vertices, faces) {
+	return faces.map((face) => {
+		const normal = vertices[face[1]].vsub(vertices[face[0]]).cross(vertices[face[2]].vsub(vertices[face[0]]));
+		normal.normalize();
+		return normal;
+	});
+}
+
+export function faceLabelSize(vertices, face, maximum, at) {
+	const center = at ? new CANNON.Vec3(at.x, at.y, at.z) : new CANNON.Vec3();
+	if (!at) {
+		for (const index of face) center.vadd(vertices[index], center);
+		center.scale(1 / face.length, center);
+	}
+	let radius = Infinity;
+	for (let i = 0; i < face.length; i++) {
+		const start = vertices[face[i]], edge = vertices[face[(i + 1) % face.length]].vsub(start);
+		radius = Math.min(radius, edge.cross(center.vsub(start)).length() / edge.length());
+	}
+	return Math.min(maximum, radius * Math.SQRT2 * 0.96);
+}
+
+export function triangleLabelLayout(vertices, face) {
+	const start = vertices[face[0]], end = vertices[face[1]], apex = vertices[face[2]];
+	const edge = end.vsub(start);
+	const length = edge.length();
+	const right = edge.scale(1 / length);
+	const normal = edge.cross(apex.vsub(start));
+	normal.normalize();
+	const up = normal.cross(right);
+	const midpoint = start.vadd(end).scale(0.5);
+	const altitude = apex.vsub(midpoint).dot(up);
+	// The texture includes space below the number for a dot; the glyph stays at the face centroid.
+	const top = 1 / 3 + 0.18, bottom = 0.02;
+	const height = top - bottom;
+	return {
+		center: midpoint.vadd(up.scale(altitude * (top + bottom) / 2)),
+		right, up, normal,
+		width: length * 0.45,
+		height: altitude * height,
+		numberCenterY: (top - 1 / 3) / height,
+		numberHeight: 0.36 / height,
+		dotCenterY: (top - 0.08) / height,
+		dotRadius: 0.055 / height,
+	};
+}
+
+function oppositeValues(geometry, first = 1, step = 1) {
+	const normals = computeFaceNormals(geometry.vertices, geometry.faces);
+	const values = Array(normals.length);
+	const total = 2 * first + (normals.length - 1) * step;
+	let next = first;
+	for (let i = 0; i < normals.length; i++) {
+		if (values[i] !== undefined) continue;
+		const opposite = normals.findIndex((normal, j) => j !== i && normal.dot(normals[i]) < -1 + 1e-8);
+		if (opposite < 0) throw new Error("Die has no opposite face");
+		values[i] = next;
+		values[opposite] = total - next;
+		next += step;
+	}
+	return values;
+}
+
 export function ensureOutwardFaces(vertices, faces) {
 	const fixed = [];
 	for (const face of faces) {
@@ -246,20 +309,30 @@ export function getDiceSpec(type) {
 	if (type === "d6") {
 		return { ...cubeSpec([1, 6, 2, 5, 3, 4]), label: "d6" };
 	}
+	if (type === "d2" || type === "d3") {
+		const divisor = type === "d2" ? 3 : 2;
+		return { ...cubeSpec([1, 6, 2, 5, 3, 4].map((value) => Math.ceil(value / divisor))), label: type };
+	}
+	if (type === "df") {
+		const values = [-1, 1, 0, 0, 1, -1];
+		return { ...cubeSpec(values), faceLabels: values.map((value) => value > 0 ? "+" : value < 0 ? "-" : ""), label: "df" };
+	}
 	if (type === "d8") {
 		const vertices = [v3(1, 0, 0), v3(-1, 0, 0), v3(0, 1, 0), v3(0, -1, 0), v3(0, 0, 1), v3(0, 0, -1)];
 		const faces = ensureOutwardFaces(vertices, [
 			[0, 2, 4], [2, 1, 4], [1, 3, 4], [3, 0, 4],
 			[2, 0, 5], [1, 2, 5], [3, 1, 5], [0, 3, 5],
 		]);
-		return { vertices, faces, values: [1, 2, 3, 4, 5, 6, 7, 8], label: "d8" };
+		return { vertices, faces, values: oppositeValues({ vertices, faces }), label: "d8" };
 	}
 	if (type === "d10") {
 		const geom = d10Geometry();
+		const faceLabels = oppositeValues(geom, 0);
 		return {
 			vertices: geom.vertices,
 			faces: geom.faces,
-			values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+			values: faceLabels.map((value) => value === 0 ? 10 : value),
+			faceLabels,
 			label: "d10",
 		};
 	}
@@ -268,7 +341,7 @@ export function getDiceSpec(type) {
 		return {
 			vertices: geom.vertices,
 			faces: geom.faces,
-			values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+			values: oppositeValues(geom),
 			label: "d12",
 		};
 	}
@@ -277,7 +350,7 @@ export function getDiceSpec(type) {
 		return {
 			vertices: geom.vertices,
 			faces: geom.faces,
-			values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+			values: oppositeValues(geom),
 			label: "d20",
 		};
 	}
@@ -286,26 +359,29 @@ export function getDiceSpec(type) {
 		return {
 			vertices: geom.vertices,
 			faces: geom.faces,
-			values: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+			values: oppositeValues(geom, 0),
 			label: "d100-ones",
 		};
 	}
 	if (type === "d100-tens") {
 		const geom = d10Geometry();
+		const values = oppositeValues(geom, 0, 10);
 		return {
 			vertices: geom.vertices,
 			faces: geom.faces,
-			values: [0, 10, 20, 30, 40, 50, 60, 70, 80, 90],
+			values,
+			faceLabels: values.map((value) => String(value).padStart(2, "0")),
 			label: "d100-tens",
 		};
 	}
 	if (type === "d012") {
 		return { ...cubeSpec([0, 1, 2, 0, 1, 2]), label: "d012" };
 	}
-	return { label: "d100" };
+	if (type === "d100") return { label: "d100", paired: true };
+	throw new Error(`Unsupported die type: ${type}`);
 }
 
 export function getDiceSize(type) {
 	const base = 0.75;
-	return ["d6", "d012", "d20"].includes(type) ? base * 0.7 : type === "d12" ? base * 1.5 : base;
+	return ["d2", "d3", "d6", "df", "d012", "d20"].includes(type) ? base * 0.7 : type === "d12" ? base * 1.5 : base;
 }
