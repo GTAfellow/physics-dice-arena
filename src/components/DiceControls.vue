@@ -1,6 +1,8 @@
 <script setup>
-import { computed, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
+import { ChevronDown, ChevronUp, Dices, RotateCcw, Trash2 } from "@lucide/vue";
 import { ARENA_OPTIONS, DICE_OPTIONS } from "../i18n";
+import { MOBILE_LAYOUT_QUERY } from "../ui/device.js";
 
 const props = defineProps({
 	copy: { type: Object, required: true },
@@ -13,6 +15,7 @@ const props = defineProps({
 	countInvalid: { type: Boolean, required: true },
 	isD100: { type: Boolean, required: true },
 	result: { type: String, required: true },
+	resultInvalid: { type: Boolean, default: false },
 });
 
 const emit = defineEmits([
@@ -23,9 +26,64 @@ const emit = defineEmits([
 	"roll",
 	"clear",
 	"toggleLang",
+	"resetView",
 ]);
 
 const typeMenuOpen = ref(false);
+const typeMenuPosition = ref({});
+const mobileQuery = window.matchMedia(MOBILE_LAYOUT_QUERY);
+const collapsed = ref(mobileQuery.matches && window.innerHeight < 500);
+const touchQuery = window.matchMedia("(pointer: coarse)");
+const isMobile = ref(mobileQuery.matches);
+const touchInput = ref(touchQuery.matches);
+const hint = computed(() => touchInput.value ? props.copy.hintTouch : props.copy.hintMouse);
+const syncInputMode = () => {
+	isMobile.value = mobileQuery.matches;
+	touchInput.value = touchQuery.matches;
+	typeMenuOpen.value = false;
+};
+
+function toggleTypeMenu(event) {
+	const bounds = event.currentTarget.getBoundingClientRect();
+	typeMenuPosition.value = {
+		left: `${bounds.left}px`,
+		bottom: `${window.innerHeight - bounds.top + 6}px`,
+		width: `${bounds.width}px`,
+		maxHeight: `${Math.max(80, Math.min(280, bounds.top - 12))}px`,
+	};
+	typeMenuOpen.value = !typeMenuOpen.value;
+}
+
+function collapse() {
+	typeMenuOpen.value = false;
+	collapsed.value = true;
+}
+
+function closeTypeMenu(event) {
+	if (!event.target.closest(".type-select-wrap, .mobile-type-menu")) typeMenuOpen.value = false;
+}
+
+function onKeyDown(event) {
+	if (event.key === "Escape" && typeMenuOpen.value) {
+		typeMenuOpen.value = false;
+		document.querySelector(".mobile-type-btn")?.focus();
+	}
+}
+
+onMounted(() => {
+	mobileQuery.addEventListener("change", syncInputMode);
+	touchQuery.addEventListener("change", syncInputMode);
+	document.addEventListener("pointerdown", closeTypeMenu);
+	document.addEventListener("keydown", onKeyDown);
+	window.addEventListener("resize", syncInputMode);
+});
+onUnmounted(() => {
+	mobileQuery.removeEventListener("change", syncInputMode);
+	touchQuery.removeEventListener("change", syncInputMode);
+	document.removeEventListener("pointerdown", closeTypeMenu);
+	document.removeEventListener("keydown", onKeyDown);
+	window.removeEventListener("resize", syncInputMode);
+});
 
 const translatedOptions = computed(() => (
 	DICE_OPTIONS.map((value) => ({ value, label: props.copy.options[value] || value }))
@@ -44,12 +102,18 @@ function selectType(value) {
 </script>
 
 <template>
-	<div class="panel">
+	<div class="controls-dock" :class="{ collapsed: collapsed && isMobile }">
+	<Transition name="sheet">
+	<section v-show="!collapsed || !isMobile" id="dice-controls" class="panel">
 		<div class="panel-head">
 			<h1 class="title">{{ copy.title }}</h1>
+			<div class="panel-tools">
+			<button type="button" class="icon-btn" :title="copy.resetView" :aria-label="copy.resetView" @click="emit('resetView')"><RotateCcw :size="18" /></button>
 			<button type="button" class="lang-btn" @click="emit('toggleLang')">{{ copy.langSwitch }}</button>
+			<button type="button" class="icon-btn collapse-btn" :title="copy.collapseControls" :aria-label="copy.collapseControls" aria-controls="dice-controls" aria-expanded="true" @click="collapse"><ChevronDown :size="22" /></button>
+			</div>
 		</div>
-		<div class="grid">
+		<div class="grid" :class="{ percentile: isD100 }">
 			<div>
 				<label for="diceType">{{ copy.diceType }}</label>
 				<div class="type-select-wrap">
@@ -67,11 +131,12 @@ function selectType(value) {
 						class="mobile-type-btn"
 						aria-haspopup="listbox"
 						:aria-expanded="String(typeMenuOpen)"
-						@click.stop="typeMenuOpen = !typeMenuOpen"
+						@click.stop="toggleTypeMenu"
 					>
 						{{ mobileTypeLabel }}
 					</button>
-					<div class="mobile-type-menu" :class="{ hidden: !typeMenuOpen }" role="listbox">
+					<Teleport to="body">
+					<div class="mobile-type-menu" :class="{ hidden: !typeMenuOpen }" :style="typeMenuPosition" role="listbox">
 						<button
 							v-for="option in translatedOptions"
 							:key="option.value"
@@ -85,6 +150,7 @@ function selectType(value) {
 							{{ option.label }}
 						</button>
 					</div>
+					</Teleport>
 				</div>
 			</div>
 			<div :class="{ hidden: isD100 }">
@@ -128,10 +194,17 @@ function selectType(value) {
 			</span>
 		</label>
 		<div class="actions">
-			<button class="primary" @click="emit('roll')">{{ copy.roll }}</button>
-			<button class="secondary" @click="emit('clear')">{{ copy.clear }}</button>
+			<button class="primary" @click="emit('roll')"><Dices :size="18" />{{ copy.roll }}</button>
+			<button class="secondary" @click="emit('clear')"><Trash2 :size="18" />{{ copy.clear }}</button>
 		</div>
-		<div class="result">{{ result }}</div>
-		<div class="hint">{{ copy.hint }}</div>
+		<output class="result" :class="{ invalid: resultInvalid }" aria-live="polite" aria-atomic="true">{{ result }}</output>
+		<div class="hint">{{ hint }}</div>
+	</section>
+	</Transition>
+	<div v-if="collapsed && isMobile" class="compact-controls">
+		<button type="button" class="icon-btn expand-btn" :title="copy.expandControls" :aria-label="copy.expandControls" aria-controls="dice-controls" aria-expanded="false" @click="collapsed = false"><ChevronUp :size="24" /></button>
+		<output class="compact-result" :class="{ invalid: resultInvalid }" aria-live="polite" aria-atomic="true">{{ result }}</output>
+		<button type="button" class="primary quick-roll" @click="emit('roll')"><Dices :size="20" />{{ copy.roll }}</button>
+	</div>
 	</div>
 </template>

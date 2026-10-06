@@ -1,14 +1,18 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import CANNON from "cannon";
-import { getDiceSpec, getDiceSize } from "./diceGeometry.js";
+import { computeFaceNormals, faceLabelSize, getDiceSpec, getDiceSize, triangleLabelLayout } from "./diceGeometry.js";
+import { buildRollResult, readDie, RollSettler } from "./diceResults.js";
+import { drawFaceLabel, getDieInkColor } from "./diceLabels.js";
 import { TOWER, getTowerParts, createTowerBody, configureTowerContacts, launchTowerDie } from "./towerPhysics.js";
 import { DISH, createDishBodies, configureDishContacts, launchDishDie } from "./dishPhysics.js";
 import { PHYSICS, configureWorld, SimulationClock } from "./physicsSettings.js";
+import { MOBILE_LAYOUT_QUERY } from "../ui/device.js";
 
 export function createDiceArena(canvas, { onRollFinish = () => {} } = {}) {
 		let diceOpacity = 0.8;
 		let arenaMode = "dish";
+		const mobileLayout = window.matchMedia(MOBILE_LAYOUT_QUERY);
 		const scene = new THREE.Scene();
 
 		const camera = new THREE.PerspectiveCamera(52, window.innerWidth / window.innerHeight, 0.1, 160);
@@ -186,46 +190,64 @@ export function createDiceArena(canvas, { onRollFinish = () => {} } = {}) {
 		const diceState = [];
 		const spawnQueue = [];
 		let rolling = false;
-		let stableTime = 0;
-		let rollStart = 0;
+		const settler = new RollSettler();
 		let nextSpawnAt = 0;
 		const clock = new SimulationClock();
 
 		function frameScene(points, target, direction, minimumDistance) {
 			const width = window.innerWidth;
 			const height = window.innerHeight;
-			const panel = document.querySelector(".panel")?.getBoundingClientRect();
-			const mobile = width <= 600;
+			const panel = document.querySelector(".controls-dock")?.getBoundingClientRect();
+			const mobile = mobileLayout.matches;
 			const left = !mobile && panel ? panel.right + 24 : 0;
 			const availableWidth = Math.max(160, width - left);
-			const availableHeight = mobile && panel ? Math.max(160, panel.top - 16) : height;
-			let distance = minimumDistance;
+			const availableHeight = mobile && panel ? Math.max(100, panel.top - 8) : height;
+			// Flush OrbitControls' damping before establishing a new default view.
+			const damping = controls.enableDamping;
+			controls.enableDamping = false;
+			controls.update();
+			controls.enableDamping = damping;
 			controls.target.copy(target);
 			camera.clearViewOffset();
-			let bounds;
-			// Fit real geometry and release positions into the area clear of controls.
-			for (let attempt = 0; attempt < 6; attempt++) {
-				controls.maxDistance = Math.max(75, distance * 1.3);
-				camera.far = Math.max(160, distance * 3);
+			const padding = mobile ? 16 : 32;
+			const projectedBounds = (distance) => {
 				camera.position.copy(controls.target).addScaledVector(direction, distance);
-				controls.update();
+				camera.lookAt(target);
+				camera.far = Math.max(160, distance * 3);
 				camera.updateProjectionMatrix();
 				camera.updateMatrixWorld();
 				const projected = points.map((point) => point.clone().project(camera));
-				bounds = {
+				return {
 					left: Math.min(...projected.map((p) => (p.x + 1) * width / 2)),
 					right: Math.max(...projected.map((p) => (p.x + 1) * width / 2)),
 					top: Math.min(...projected.map((p) => (1 - p.y) * height / 2)),
 					bottom: Math.max(...projected.map((p) => (1 - p.y) * height / 2)),
 				};
-				const scale = Math.max((bounds.right - bounds.left) / (availableWidth - 32), (bounds.bottom - bounds.top) / (availableHeight - 32));
-				if (scale <= 1) break;
-				distance *= scale * 1.04;
+			};
+			const fits = (bounds) => bounds.right - bounds.left <= availableWidth - padding && bounds.bottom - bounds.top <= availableHeight - padding;
+			let near = Math.max(minimumDistance, ...points.map((point) => point.clone().sub(target).dot(direction) + camera.near + 0.5));
+			let far = near;
+			while (!fits(projectedBounds(far))) far *= 1.5;
+			// Binary search can zoom back in after the initial perspective overshoot.
+			for (let attempt = 0; attempt < 20; attempt++) {
+				const mid = (near + far) / 2;
+				if (fits(projectedBounds(mid))) far = mid;
+				else near = mid;
 			}
+			const bounds = projectedBounds(far);
+			controls.maxDistance = Math.max(75, far * 1.3);
+			controls.update();
 			camera.setViewOffset(width, height, (bounds.left + bounds.right - left - width) / 2, (bounds.top + bounds.bottom - availableHeight) / 2, width, height);
 		}
 
 		function frameTower() {
+			if (mobileLayout.matches) {
+				// On phones, prioritize the tray; the tower top may extend offscreen.
+				const points = [];
+				for (const x of [-5.3, 5.3]) for (const y of [0, 3.2]) for (const z of [0.8, 12.3]) points.push(new THREE.Vector3(x, y, z));
+				frameScene(points, new THREE.Vector3(0, 1.3, 6), new THREE.Vector3(1, 4.5, 0.35).normalize(), 12);
+				return;
+			}
 			const points = getTowerParts().flatMap((part) => {
 				const rotation = new THREE.Euler(...(part.rotation || [0, 0, 0]));
 				const corners = [];
@@ -244,8 +266,11 @@ export function createDiceArena(canvas, { onRollFinish = () => {} } = {}) {
 				const angle = i * Math.PI * 2 / DISH.segments;
 				for (const y of [-DISH.baseThickness, DISH.depth]) points.push(new THREE.Vector3(Math.cos(angle) * (DISH.radius + DISH.wallThickness), y, Math.sin(angle) * (DISH.radius + DISH.wallThickness)));
 			}
-			for (const x of [-7, 7]) for (const z of [-4.5, 4.5]) points.push(new THREE.Vector3(x, DISH.spawnHeight + 1.7, z));
-			frameScene(points, new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0.9, 1).normalize(), 24);
+			if (!mobileLayout.matches) {
+				for (const x of [-5.5, 5.5]) for (const z of [-2.8, 2.8]) points.push(new THREE.Vector3(x, DISH.spawnHeight + 1.65, z));
+			}
+			const direction = new THREE.Vector3(0, mobileLayout.matches ? 3.8 : 1.1, 1).normalize();
+			frameScene(points, new THREE.Vector3(0, 0.8, 0), direction, 12);
 		}
 
 
@@ -271,58 +296,14 @@ export function createDiceArena(canvas, { onRollFinish = () => {} } = {}) {
 			return geo;
 		}
 
-		function computeFaceNormals(vertices, faces) {
-			const normals = [];
-			for (const face of faces) {
-				const a = vertices[face[0]];
-				const b = vertices[face[1]];
-				const c = vertices[face[2]];
-				const ab = b.vsub(a);
-				const ac = c.vsub(a);
-				const n = ab.cross(ac);
-				n.normalize();
-				normals.push(n);
-			}
-			return normals;
-		}
-
-		function createFaceTexture(text, textColor) {
+		function createFaceTexture(text, textColor, fate = false, layout = null) {
 			const size = 256;
 			const c = document.createElement("canvas");
-			c.width = size;
-			c.height = size;
+			const ratio = layout ? layout.width / layout.height : 1;
+			c.width = layout ? Math.round(512 * Math.min(1, ratio)) : size;
+			c.height = layout ? Math.round(512 / Math.max(1, ratio)) : size;
 			const ctx = c.getContext("2d");
-			const label = String(text);
-			ctx.clearRect(0, 0, size, size);
-			ctx.fillStyle = textColor;
-			ctx.textAlign = "center";
-			ctx.textBaseline = "middle";
-			ctx.font = "700 172px Space Grotesk, sans-serif";
-			ctx.strokeStyle = "rgba(255,255,255,0.7)";
-			ctx.lineWidth = 14;
-			ctx.strokeText(label, size / 2, size / 2 + 4);
-			ctx.fillText(label, size / 2, size / 2 + 4);
-
-			if (/[69]/.test(label)) {
-				const metrics = ctx.measureText(label);
-				const lineWidth = Math.max(30, metrics.width * 0.86);
-				const x1 = size / 2 - lineWidth / 2;
-				const x2 = size / 2 + lineWidth / 2;
-				const y = size * 0.78;
-				ctx.beginPath();
-				ctx.strokeStyle = "rgba(255,255,255,0.9)";
-				ctx.lineWidth = 16;
-				ctx.moveTo(x1, y);
-				ctx.lineTo(x2, y);
-				ctx.stroke();
-
-				ctx.beginPath();
-				ctx.strokeStyle = textColor;
-				ctx.lineWidth = 8;
-				ctx.moveTo(x1, y);
-				ctx.lineTo(x2, y);
-				ctx.stroke();
-			}
+			drawFaceLabel(ctx, text, textColor, size, fate, layout ? { ...layout, width: c.width, height: c.height } : null);
 			const tex = new THREE.CanvasTexture(c);
 			tex.needsUpdate = true;
 			return tex;
@@ -368,19 +349,16 @@ export function createDiceArena(canvas, { onRollFinish = () => {} } = {}) {
 			return type === "d6" || type === "d012" ? "pip" : "number";
 		}
 
-		function isPercentileType(type) {
-			return type === "d100-ones" || type === "d100-tens";
-		}
-
 		function addFaceLabels(mesh, spec, scaledVertices, baseColor, dieType) {
 			if (!spec || !spec.faces || !spec.values) {
 				return;
 			}
 			const normals = computeFaceNormals(scaledVertices, spec.faces);
-			const dark = new THREE.Color(baseColor).multiplyScalar(0.52).getStyle();
+			const ink = getDieInkColor(baseColor);
 			const mode = labelModeForType(dieType);
 			for (let i = 0; i < spec.faces.length; i++) {
 				const face = spec.faces[i];
+				const layout = dieType === "d8" || dieType === "d20" ? triangleLabelLayout(scaledVertices, face) : null;
 				const center = new THREE.Vector3();
 				for (let j = 0; j < face.length; j++) {
 					const v = scaledVertices[face[j]];
@@ -389,25 +367,32 @@ export function createDiceArena(canvas, { onRollFinish = () => {} } = {}) {
 					center.z += v.z;
 				}
 				center.multiplyScalar(1 / face.length);
+				if (layout) center.set(layout.center.x, layout.center.y, layout.center.z);
 
 				const n = normals[i];
 				const normal = new THREE.Vector3(n.x, n.y, n.z).normalize();
 				const map = mode === "pip"
-					? createPipTexture(spec.values[i], dark)
-					: createFaceTexture(spec.values[i], dark);
-				const labelSize = mode === "pip" ? 0.78 : 0.66;
+					? createPipTexture(spec.values[i], ink)
+					: createFaceTexture(spec.faceLabels?.[i] ?? spec.values[i], ink, dieType === "df", layout);
+				const labelSize = faceLabelSize(scaledVertices, face, dieType === "df" ? 0.92 : mode === "pip" ? 0.78 : 0.66);
 				const label = new THREE.Mesh(
-					new THREE.PlaneGeometry(labelSize, labelSize),
+					new THREE.PlaneGeometry(layout?.width ?? labelSize, layout?.height ?? labelSize),
 					new THREE.MeshBasicMaterial({
 						map,
 						transparent: true,
 						alphaTest: 0.08,
 						depthWrite: false,
-						side: THREE.DoubleSide,
+						side: THREE.FrontSide,
 					})
 				);
 				label.position.copy(center.addScaledVector(normal, 0.035));
-				label.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal);
+				if (layout) {
+					const right = new THREE.Vector3(layout.right.x, layout.right.y, layout.right.z);
+					const up = new THREE.Vector3(layout.up.x, layout.up.y, layout.up.z);
+					label.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(right, up, normal));
+				} else {
+					label.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal);
+				}
 				mesh.add(label);
 			}
 		}
@@ -416,7 +401,7 @@ export function createDiceArena(canvas, { onRollFinish = () => {} } = {}) {
 			if (!spec || !spec.vertexValues) {
 				return;
 			}
-			const dark = new THREE.Color(baseColor).multiplyScalar(0.52).getStyle();
+			const ink = getDieInkColor(baseColor);
 			const normals = computeFaceNormals(scaledVertices, spec.faces);
 			for (let i = 0; i < spec.faces.length; i++) {
 				const face = spec.faces[i];
@@ -438,7 +423,9 @@ export function createDiceArena(canvas, { onRollFinish = () => {} } = {}) {
 					);
 
 					// Put the label on the triangle altitude (corner -> opposite edge midpoint), inside face.
-					const pos = corner.clone().lerp(oppositeMid, 0.38).addScaledVector(normal, 0.015);
+					const surfacePoint = corner.clone().lerp(oppositeMid, 0.38);
+					const labelSize = faceLabelSize(scaledVertices, face, 0.7, surfacePoint);
+					const pos = surfacePoint.addScaledVector(normal, 0.015);
 					const altitudeDir = oppositeMid.clone().sub(corner).normalize();
 					const upAxis = altitudeDir.lengthSq() > 1e-6
 						? altitudeDir
@@ -446,13 +433,13 @@ export function createDiceArena(canvas, { onRollFinish = () => {} } = {}) {
 					const rightAxis = new THREE.Vector3().crossVectors(upAxis, normal).normalize();
 					const basis = new THREE.Matrix4().makeBasis(rightAxis, upAxis, normal);
 					const label = new THREE.Mesh(
-						new THREE.PlaneGeometry(0.7, 0.7),
+						new THREE.PlaneGeometry(labelSize, labelSize),
 						new THREE.MeshBasicMaterial({
-							map: createFaceTexture(spec.vertexValues[vidx], dark),
+							map: createFaceTexture(spec.vertexValues[vidx], ink, false, { width: labelSize, height: labelSize }),
 							transparent: true,
 							alphaTest: 0.08,
 							depthWrite: false,
-							side: THREE.DoubleSide,
+							side: THREE.FrontSide,
 						})
 					);
 					label.position.copy(pos);
@@ -466,6 +453,9 @@ export function createDiceArena(canvas, { onRollFinish = () => {} } = {}) {
 
 		function makeDie(type, index, total) {
 			const palette = {
+				d2: 0x06b6d4,
+				d3: 0x84cc16,
+				df: 0xf8fafc,
 				d4: 0xef4444,
 				d6: 0x0ea5e9,
 				d8: 0x14b8a6,
@@ -484,39 +474,8 @@ export function createDiceArena(canvas, { onRollFinish = () => {} } = {}) {
 			let body;
 			let mesh;
 
-			if (type === "d100") {
-				const radius = size * 0.9;
-				body = new CANNON.Body({
-					mass: 1,
-					material: dieMat,
-					shape: new CANNON.Sphere(radius),
-					linearDamping: PHYSICS.linearDamping,
-					angularDamping: PHYSICS.angularDamping,
-				});
-				mesh = new THREE.Mesh(
-					new THREE.SphereGeometry(radius, 40, 30),
-					new THREE.MeshStandardMaterial({
-						color,
-						roughness: 0.45,
-						metalness: 0.2,
-						transparent: diceOpacity < 1,
-						opacity: diceOpacity,
-					})
-				);
-				const tag = new THREE.Mesh(
-					new THREE.PlaneGeometry(0.9, 0.9),
-					new THREE.MeshBasicMaterial({
-						map: createFaceTexture("100", "#4c1d95"),
-						transparent: true,
-						alphaTest: 0.08,
-						depthWrite: false,
-						side: THREE.DoubleSide,
-					})
-				);
-				tag.position.set(0, radius + 0.02, 0);
-				tag.rotation.x = -Math.PI / 2;
-				mesh.add(tag);
-			} else {
+			if (!spec.vertices) throw new Error("Percentile rolls must use two D10 dice");
+			{
 				const scaledVertices = spec.vertices.map((p) => new CANNON.Vec3(p.x * size, p.y * size, p.z * size));
 				const shape = new CANNON.ConvexPolyhedron(scaledVertices, spec.faces);
 				body = new CANNON.Body({
@@ -548,21 +507,6 @@ export function createDiceArena(canvas, { onRollFinish = () => {} } = {}) {
 					addVertexLabels(mesh, spec, scaledVertices, color);
 				} else {
 					addFaceLabels(mesh, spec, scaledVertices, color, type);
-				}
-				if (isPercentileType(type)) {
-					const sideTag = new THREE.Mesh(
-						new THREE.PlaneGeometry(0.46, 0.46),
-						new THREE.MeshBasicMaterial({
-							map: createFaceTexture(type === "d100-tens" ? "10s" : "1s", "#0f172a"),
-							transparent: true,
-							alphaTest: 0.08,
-							depthWrite: false,
-							side: THREE.DoubleSide,
-						})
-					);
-					sideTag.position.set(0, 0.02, 0);
-					sideTag.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 1, 0));
-					mesh.add(sideTag);
 				}
 			}
 
@@ -618,57 +562,15 @@ export function createDiceArena(canvas, { onRollFinish = () => {} } = {}) {
 				});
 			}
 			rolling = false;
-			stableTime = 0;
+			settler.reset();
 		}
 
 		function getTopValue(die) {
-			if (die.type === "d100") {
-				return Math.floor(Math.random() * 100) + 1;
-			}
-			if (die.type === "d4") {
-				let bestIdx = 0;
-				let bestUp = -Infinity;
-				const scaled = die.spec.vertices.map((p) => new CANNON.Vec3(p.x * die.size, p.y * die.size, p.z * die.size));
-				for (let i = 0; i < scaled.length; i++) {
-					const worldV = die.body.quaternion.vmult(scaled[i]);
-					if (worldV.y > bestUp) {
-						bestUp = worldV.y;
-						bestIdx = i;
-					}
-				}
-				return die.spec.vertexValues[bestIdx] ?? 0;
-			}
-			const { normals, values } = die.spec;
-			let bestIdx = 0;
-			let bestUp = -Infinity;
-			for (let i = 0; i < normals.length; i++) {
-				const worldN = die.body.quaternion.vmult(normals[i]);
-				if (worldN.y > bestUp) {
-					bestUp = worldN.y;
-					bestIdx = i;
-				}
-			}
-			return values[bestIdx] ?? 0;
+			return readDie(die).value;
 		}
 
 		function finishRoll() {
-			const percentileOnes = diceState.find((d) => d.type === "d100-ones");
-			const percentileTens = diceState.find((d) => d.type === "d100-tens");
-			if (percentileOnes && percentileTens && diceState.length === 2) {
-				const ones = getTopValue(percentileOnes);
-				const tens = getTopValue(percentileTens);
-				let total = ones + tens;
-				if (ones === 0 && tens === 0) {
-					total = 100;
-				}
-				onRollFinish({ kind: "percentile", ones, tens, total });
-				rolling = false;
-				return;
-			}
-
-			const values = diceState.map((d) => getTopValue(d));
-			const sum = values.reduce((a, b) => a + b, 0);
-			onRollFinish({ kind: "sum", values, sum });
+			onRollFinish(buildRollResult(diceState));
 			rolling = false;
 		}
 
@@ -687,9 +589,8 @@ export function createDiceArena(canvas, { onRollFinish = () => {} } = {}) {
 			}
 
 			rolling = true;
-			stableTime = 0;
-			rollStart = clock.elapsed;
-			nextSpawnAt = rollStart;
+			settler.reset();
+			nextSpawnAt = clock.elapsed;
 		}
 
 		function spawnNextDie(now) {
@@ -700,7 +601,7 @@ export function createDiceArena(canvas, { onRollFinish = () => {} } = {}) {
 			const next = spawnQueue.shift();
 			diceState.push(makeDie(next.type, next.index, next.total));
 			nextSpawnAt = now + (arenaMode === "tower" ? TOWER.spawnInterval : DISH.spawnInterval);
-			stableTime = 0;
+			settler.reset();
 		}
 
 		function stepSimulation(dt) {
@@ -710,14 +611,11 @@ export function createDiceArena(canvas, { onRollFinish = () => {} } = {}) {
 				for (const d of diceState) {
 					if (arenaMode === "tower" && d.body.position.z > d.body.boundingRadius && d.body.position.y < TOWER.exitHeight) d.exited = true;
 				}
-				if (rolling && diceState.length > 0 && spawnQueue.length === 0) {
-					const allSlow = simulationTime - rollStart > 0.9 && diceState.every((d) =>
-						d.body.velocity.length() < 0.12 && d.body.angularVelocity.length() < 0.12
-						&& (arenaMode !== "tower" || (d.exited && d.body.position.z > 0))
-						&& (arenaMode !== "dish" || d.body.position.y < DISH.depth)
-					);
-					stableTime = allSlow ? stableTime + fixedTimeStep : 0;
-					if (stableTime > 0.65) finishRoll();
+				if (rolling) {
+					const ready = spawnQueue.length === 0 && diceState.every((d) =>
+						(arenaMode !== "tower" || (d.exited && d.body.position.z > 0))
+						&& (arenaMode !== "dish" || d.body.position.y < DISH.depth));
+					if (settler.update(fixedTimeStep / PHYSICS.playbackSpeed, diceState, ready)) finishRoll();
 				}
 			}, 96);
 		}
@@ -751,6 +649,12 @@ export function createDiceArena(canvas, { onRollFinish = () => {} } = {}) {
 			renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 		};
 		window.addEventListener("resize", onResize);
+		const panelObserver = new ResizeObserver(() => {
+			if (arenaMode === "tower") frameTower();
+			else frameDish();
+		});
+		const dock = document.querySelector(".controls-dock");
+		if (dock) panelObserver.observe(dock);
 		frameDish();
 		animate();
 
@@ -759,9 +663,14 @@ export function createDiceArena(canvas, { onRollFinish = () => {} } = {}) {
 			clear: clearDice,
 			setDiceTranslucent,
 			setArenaMode,
+			resetView() {
+				if (arenaMode === "tower") frameTower();
+				else frameDish();
+			},
 			dispose() {
 				cancelAnimationFrame(animationId);
 				window.removeEventListener("resize", onResize);
+				panelObserver.disconnect();
 				document.removeEventListener("visibilitychange", onVisibilityChange);
 				clearDice();
 				controls.dispose();
@@ -793,6 +702,8 @@ export function createDiceArena(canvas, { onRollFinish = () => {} } = {}) {
 					speed: die.body.velocity.length(),
 					spin: die.body.angularVelocity.length(),
 					sleepState: die.body.sleepState,
+					value: getTopValue(die),
+					quaternion: { x: die.body.quaternion.x, y: die.body.quaternion.y, z: die.body.quaternion.z, w: die.body.quaternion.w },
 				}));
 			},
 			getPhysicsState() {
@@ -805,6 +716,19 @@ export function createDiceArena(canvas, { onRollFinish = () => {} } = {}) {
 					pendingSeconds: clock.accumulator,
 					queuedDice: spawnQueue.length,
 					rolling,
+					stablePlaybackSeconds: settler.elapsed,
+				};
+			},
+			getViewState() {
+				const project = (point) => {
+					const p = point.clone().project(camera);
+					return { x: (p.x + 1) * window.innerWidth / 2, y: (1 - p.y) * window.innerHeight / 2 };
+				};
+				return {
+					position: camera.position.toArray(),
+					target: controls.target.toArray(),
+					dice: diceState.map((die) => project(new THREE.Vector3(die.body.position.x, die.body.position.y, die.body.position.z))),
+					tray: [-5.3, 5.3].flatMap((x) => [0, 3.2].flatMap((y) => [0.8, 12.3].map((z) => project(new THREE.Vector3(x, y, z))))),
 				};
 			},
 		};

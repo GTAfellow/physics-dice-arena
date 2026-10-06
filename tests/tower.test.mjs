@@ -68,7 +68,7 @@ function simulate(types, seed) {
 	assert.fail(`Jam with seed ${seed}: ${JSON.stringify(dice.map((d) => ({ type: d.type, position: d.body.position, speed: d.body.velocity.length(), spin: d.body.angularVelocity.length(), exited: d.exited, surfaces: [...d.surfaces] })))}`);
 }
 
-const types = ["d4", "d6", "d8", "d10", "d12", "d20", "d012", "d100-ones", "d100-tens"];
+const types = ["d2", "d3", "df", "d4", "d6", "d8", "d10", "d12", "d20", "d012", "d100-ones", "d100-tens"];
 
 test("single dice hit both alternating baffles and the exit ramp", () => {
 	for (const type of types) {
